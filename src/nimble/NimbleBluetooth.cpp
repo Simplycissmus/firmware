@@ -921,7 +921,9 @@ void NimbleBluetooth::setup()
 #endif
 
     BLEDevice::init(getDeviceName());
+#if defined(SOC_BLE_SUPPORTED)
     BLEDevice::setPower(ESP_PWR_LVL_P9);
+#endif
 
     int mtuResult = BLEDevice::setMTU(kPreferredBleMtu);
     if (mtuResult == 0) {
