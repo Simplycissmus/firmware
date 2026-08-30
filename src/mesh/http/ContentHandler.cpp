@@ -695,18 +695,18 @@ void handleReport(HTTPRequest *req, HTTPResponse *res)
     out += jsonNum((int)memGet.getPsramSize());
     out += "}";
 
-    // power (has_* / is_charging were serialized as the strings "true"/"false")
+    // power
     out += ",\"power\":{";
     out += "\"battery_percent\":";
     out += jsonNum(powerStatus->getBatteryChargePercent());
     out += ",\"battery_voltage_mv\":";
     out += jsonNum(powerStatus->getBatteryVoltageMv());
     out += ",\"has_battery\":";
-    out += jsonEscape(BoolToString(powerStatus->getHasBattery()));
+    out += BoolToString(powerStatus->getHasBattery());
     out += ",\"has_usb\":";
-    out += jsonEscape(BoolToString(powerStatus->getHasUSB()));
+    out += BoolToString(powerStatus->getHasUSB());
     out += ",\"is_charging\":";
-    out += jsonEscape(BoolToString(powerStatus->getIsCharging()));
+    out += BoolToString(powerStatus->getIsCharging());
     out += "}";
 
     // radio
@@ -798,7 +798,7 @@ void handleNodes(HTTPRequest *req, HTTPResponse *res)
             out += ",\"snr\":";
             out += jsonNum(tempNodeInfo->snr);
             out += ",\"via_mqtt\":";
-            out += jsonEscape(BoolToString(nodeInfoLiteViaMqtt(tempNodeInfo)));
+            out += BoolToString(nodeInfoLiteViaMqtt(tempNodeInfo));
             out += "}";
         }
         tempNodeInfo = nodeDB->readNextMeshNode(readIndex);

@@ -12,6 +12,10 @@
 // GEP-M10-DI I2C: DPS310 baro/temp @0x76 (IST8310 mag @0x0E is not supported by the firmware)
 #define I2C_SDA 46
 #define I2C_SCL 33
+// Second bus for external sensors (SHT45 etc.). NOT on the silk SDA/SCL pins (GPIO7/8): they are shared with the
+// onboard ES8311 codec and Wire1 there boot-loops the board (hardware-verified); GPIO26/27 are clean.
+#define I2C_SDA1 26
+#define I2C_SCL1 27
 
 // BOOT button
 #define BUTTON_PIN 35
