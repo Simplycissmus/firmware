@@ -31,6 +31,7 @@ static void WiFiEvent(WiFiEvent_t event);
 #elif defined(ARCH_RP2040)
 #include <FreeRTOS.h>
 #include <SimpleMDNS.h>
+#include <atomic>
 #include <task.h>
 #endif
 
@@ -71,23 +72,30 @@ bool isReconnecting = false; // If we are currently reconnecting
 // Pinned to core 0. Every task this port creates is pinned - the Arduino loop and the LWIP thread to core 0, the
 // second sketch task to core 1 - and the CYW43 shim is written for the core-0 LWIP thread: its get_core_num()
 // assertions sit under NDEBUG, so a join running on core 1 would go wrong quietly instead of trapping.
-static TaskHandle_t wifiJoinTask = nullptr;
+//
+// What the join owns is a flag, not a task handle. reconnectWiFi() - a single Periodic - is the only writer of true
+// and claims before the task exists; false is written by whichever side holds the claim, the task when it returns or
+// the creator when the create did not take, and those two are exclusive. So the flag has one writer at any instant,
+// and no handle outlives the task it named. Load and store only, never a read-modify-write: ARMv6-M has no LDREX, so
+// an exchange() lowers to a __atomic_exchange_1 call rather than an instruction.
+static std::atomic<bool> wifiJoinRunning{false};
 
 static void wifiJoinTaskFn(void *)
 {
     const char *psk = config.network.wifi_psk[0] ? config.network.wifi_psk : NULL;
     WiFi.beginNoBlock(config.network.wifi_ssid, psk);
-    wifiJoinTask = nullptr;
+    wifiJoinRunning.store(false, std::memory_order_release);
     vTaskDelete(NULL);
 }
 
 static bool startWifiJoin()
 {
-    if (wifiJoinTask)
+    if (wifiJoinRunning.load(std::memory_order_acquire))
         return true; // previous join still in progress
-    if (xTaskCreateAffinitySet(wifiJoinTaskFn, "wifijoin", 1536, NULL, uxTaskPriorityGet(NULL), 1u << 0, &wifiJoinTask) !=
-        pdPASS) {
+    wifiJoinRunning.store(true, std::memory_order_relaxed);
+    if (xTaskCreateAffinitySet(wifiJoinTaskFn, "wifijoin", 1536, NULL, uxTaskPriorityGet(NULL), 1u << 0, NULL) != pdPASS) {
         LOG_ERROR("Could not start WiFi join task");
+        wifiJoinRunning.store(false, std::memory_order_relaxed);
         return false;
     }
     return true;
@@ -348,8 +356,8 @@ static int32_t reconnectWiFi()
     if (config.network.wifi_enabled && !WiFi.isConnected()) {
 #ifdef ARCH_RP2040 // (ESP32 handles this in WiFiEvent)
         // Lost the link, or a join that has not come up within 30 s: start the join over once the join task is done.
-        needReconnect = !wifiJoinTask && (APStartupComplete || (!isReconnecting && !Throttle::isWithinTimespanMs(
-                                                                                     wifiReconnectStartMillis, 30000)));
+        needReconnect = !wifiJoinRunning.load(std::memory_order_acquire) &&
+                        (APStartupComplete || (!isReconnecting && Throttle::hasElapsed(wifiReconnectStartMillis, 30000)));
 #endif
         return 1000; // check once per second
     } else {
