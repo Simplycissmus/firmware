@@ -79,6 +79,7 @@ bool isReconnecting = false; // If we are currently reconnecting
 // and no handle outlives the task it named. Load and store only, never a read-modify-write: ARMv6-M has no LDREX, so
 // an exchange() lowers to a __atomic_exchange_1 call rather than an instruction.
 static std::atomic<bool> wifiJoinRunning{false};
+static uint32_t wifiJoinStartMillis = 0; // 0 = nothing in flight. Written and read only by reconnectWiFi()'s thread.
 
 static void wifiJoinTaskFn(void *)
 {
@@ -93,9 +94,12 @@ static bool startWifiJoin()
     if (wifiJoinRunning.load(std::memory_order_acquire))
         return true; // previous join still in progress
     wifiJoinRunning.store(true, std::memory_order_relaxed);
+    uint32_t startedAt = millis();
+    wifiJoinStartMillis = startedAt == 0 ? 1 : startedAt;
     if (xTaskCreateAffinitySet(wifiJoinTaskFn, "wifijoin", 1536, NULL, uxTaskPriorityGet(NULL), 1u << 0, NULL) != pdPASS) {
         LOG_ERROR("Could not start WiFi join task");
         wifiJoinRunning.store(false, std::memory_order_relaxed);
+        wifiJoinStartMillis = 0;
         return false;
     }
     return true;
@@ -358,6 +362,18 @@ static int32_t reconnectWiFi()
     if (config.network.wifi_enabled && !WiFi.isConnected()) {
 #ifdef ARCH_RP2040 // (ESP32 handles this in WiFiEvent)
         // Lost the link, or a join that has not come up within 30 s: start the join over once the join task is done.
+        // A join can wedge. Past its own 15 s timeout the CYW43 driver waits on the link with no deadline at all, and
+        // that task then never releases the claim, so nothing below would ever retry. While the join ran on the main
+        // loop the 8 s watchdog rebooted us out of that; now the loop keeps feeding the dog, so the node would sit off
+        // the network in silence. Ask for the reboot deliberately rather than lose it by accident.
+        if (wifiJoinStartMillis != 0 && wifiJoinRunning.load(std::memory_order_relaxed) &&
+            Throttle::hasElapsed(wifiJoinStartMillis, 60000)) {
+            LOG_ERROR("WiFi join stuck in the driver for 60 s, reboot to recover");
+            wifiJoinStartMillis = 0; // say it once
+            uint32_t rebootAt = millis() + 5000;
+            rebootAtMsec = rebootAt == 0 ? 1 : rebootAt;
+        }
+
         // wifiReconnectStartMillis is 0 until the first join arms it, and Throttle::hasElapsed() deliberately leaves
         // that test to the caller so the sentinel never reaches its arithmetic.
         needReconnect = !wifiJoinRunning.load(std::memory_order_acquire) &&
