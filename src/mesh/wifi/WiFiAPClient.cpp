@@ -68,18 +68,10 @@ bool isReconnecting = false; // If we are currently reconnecting
 #ifdef ARCH_RP2040
 // On the CYW43 under FreeRTOS even WiFi.beginNoBlock() holds the caller for several seconds (up to the WiFi timeout,
 // 15 s); from the main loop that trips the 8 s hardware watchdog. Join from a short-lived task and poll for the link.
-//
-// Pinned to core 0. Every task this port creates is pinned - the Arduino loop and the LWIP thread to core 0, the
-// second sketch task to core 1 - and the CYW43 shim is written for the core-0 LWIP thread: its get_core_num()
-// assertions sit under NDEBUG, so a join running on core 1 would go wrong quietly instead of trapping.
-//
-// What the join owns is a flag, not a task handle. reconnectWiFi() - a single Periodic - is the only writer of true
-// and claims before the task exists; false is written by whichever side holds the claim, the task when it returns or
-// the creator when the create did not take, and those two are exclusive. So the flag has one writer at any instant,
-// and no handle outlives the task it named. Load and store only, never a read-modify-write: ARMv6-M has no LDREX, so
-// an exchange() lowers to a __atomic_exchange_1 call rather than an instruction.
+// Pinned to core 0: the CYW43 shim is written for the core-0 LWIP thread and its core assertions are NDEBUG-only.
+// The claim is load/store only - ARMv6-M has no LDREX, so an exchange() would call libatomic.
 static std::atomic<bool> wifiJoinRunning{false};
-static uint32_t wifiJoinStartMillis = 0; // 0 = nothing in flight. Written and read only by reconnectWiFi()'s thread.
+static uint32_t wifiJoinStartMillis = 0; // 0 = nothing in flight
 
 static void wifiJoinTaskFn(void *)
 {
@@ -309,8 +301,7 @@ static int32_t reconnectWiFi()
 #endif
         LOG_INFO("Reconnecting to WiFi access point %s", wifiName);
 
-        // Start the non-blocking wait for 5 seconds. 0 is this field's "not armed", so never store it as a time -
-        // the dodge GPS.cpp already uses for fixHoldEnds.
+        // Start the non-blocking wait for 5 seconds. 0 is this field's "not armed", so never store it as a time.
         uint32_t startedAt = millis();
         wifiReconnectStartMillis = startedAt == 0 ? 1 : startedAt;
         wifiReconnectPending = true;
@@ -361,11 +352,7 @@ static int32_t reconnectWiFi()
 
     if (config.network.wifi_enabled && !WiFi.isConnected()) {
 #ifdef ARCH_RP2040 // (ESP32 handles this in WiFiEvent)
-        // Lost the link, or a join that has not come up within 30 s: start the join over once the join task is done.
-        // A join can wedge. Past its own 15 s timeout the CYW43 driver waits on the link with no deadline at all, and
-        // that task then never releases the claim, so nothing below would ever retry. While the join ran on the main
-        // loop the 8 s watchdog rebooted us out of that; now the loop keeps feeding the dog, so the node would sit off
-        // the network in silence. Ask for the reboot deliberately rather than lose it by accident.
+        // CYW43::begin() can wait on the link past its own timeout with no deadline, never releasing the claim.
         if (wifiJoinStartMillis != 0 && wifiJoinRunning.load(std::memory_order_relaxed) &&
             Throttle::hasElapsed(wifiJoinStartMillis, 60000)) {
             LOG_ERROR("WiFi join stuck in the driver for 60 s, reboot to recover");
@@ -374,8 +361,8 @@ static int32_t reconnectWiFi()
             rebootAtMsec = rebootAt == 0 ? 1 : rebootAt;
         }
 
-        // wifiReconnectStartMillis is 0 until the first join arms it, and Throttle::hasElapsed() deliberately leaves
-        // that test to the caller so the sentinel never reaches its arithmetic.
+        // Lost the link, or a join that has not come up within 30 s: start the join over once the join task is done.
+        // 0 means not armed, and Throttle::hasElapsed() leaves that test to the caller.
         needReconnect = !wifiJoinRunning.load(std::memory_order_acquire) &&
                         (APStartupComplete || (!isReconnecting && wifiReconnectStartMillis != 0 &&
                                                Throttle::hasElapsed(wifiReconnectStartMillis, 30000)));
