@@ -8,6 +8,26 @@
 #include <pico/stdlib.h>
 #include <pico/unique_id.h>
 
+// ASSERT_TEST - hardware check for meshtastic/firmware#11795, not for merge.
+//   1: fail an assert 60 s into loop(), watchdog armed
+//   2: fail an assert inside rp2040Setup(), before the watchdog exists
+//   3: as 2, with an nRF52-style __assert_func (log + watchdog_reboot)
+#ifndef ASSERT_TEST
+#define ASSERT_TEST 0
+#endif
+
+#include <assert.h>
+
+#if ASSERT_TEST == 3
+extern "C" void __assert_func(const char *file, int line, const char *func, const char *failedexpr)
+{
+    LOG_ERROR("assert failed %s: %d, %s, test=%s", file, line, func, failedexpr);
+    watchdog_reboot(0, 0, 10);
+    while (1) {
+    }
+}
+#endif
+
 #ifdef __PLAT_RP2040__
 #include <pico/sleep.h>
 
@@ -114,6 +134,12 @@ void rp2040Setup()
         LOG_WARN("Rebooted by watchdog");
     }
 
+    if (ASSERT_TEST == 2 || ASSERT_TEST == 3) {
+        LOG_WARN("ASSERT_TEST=%d: failing an assert inside setup", ASSERT_TEST);
+        volatile int assertTestZero = 0;
+        assert(assertTestZero);
+    }
+
     /* Sets a random seed to make sure we get different random numbers on each boot. */
     uint32_t seed = 0;
     if (!HardwareRNG::seed(seed)) {
@@ -151,6 +177,12 @@ void rp2040Loop()
         watchdog_running = true;
     }
     watchdog_update();
+
+    if (ASSERT_TEST == 1 && millis() > 60000) {
+        LOG_WARN("ASSERT_TEST=1: failing an assert with the watchdog armed");
+        volatile int assertTestZero = 0;
+        assert(assertTestZero);
+    }
 }
 
 void enterDfuMode()
